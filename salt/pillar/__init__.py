@@ -824,6 +824,14 @@ class Pillar(object):
                            self.opts.get('renderer', 'yaml'),
                            self.opts.get('pillar_merge_lists', False))
 
+        if 'pillar_interpolate' in self.opts and self.opts['pillar_interpolate'] is True:
+            # @hemebond
+            # This is where we can resolve variables
+            # log.debug("returning pillarz")
+            # log.debug(pillar)
+
+            pillar = resolve_node([], pillar)
+
         return pillar
 
 
@@ -834,3 +842,61 @@ class AsyncPillar(Pillar):
     def compile_pillar(self, ext=True, pillar_dirs=None):
         ret = super(AsyncPillar, self).compile_pillar(ext=ext, pillar_dirs=pillar_dirs)
         raise tornado.gen.Return(ret)
+
+
+import re
+PATTERN = re.compile('(\$\{\W*([\w\:\.]+)\W*\})')
+
+def resolve_node(path, pillar, stack=[]):
+    '''
+        psth is a list of strings and ints that point to an item in the pillar
+    '''
+
+    # print('resolving:  {}'.format(path))
+    # print(' stack: {}'.format(stack))
+
+    # Start at the root of the pillar
+    value = pillar
+
+    # Walk along the path to find the node we're solving
+    for p in path:
+        if isinstance(value, list) \
+           and isinstance(p, (str, unicode)) \
+           and p.isdigit():
+            value = value[int(p)]
+        else:
+            value = value[p]
+
+    # print(' current value: {}'.format(value))
+
+    if isinstance(value, (dict, OrderedDict)):
+        for k in value.keys():
+            value[k] = resolve_node(path + [k], pillar)
+    elif isinstance(value, list):
+        for idx, i in enumerate(value):
+            value[idx] = resolve_node(path + [idx], pillar)
+    elif isinstance(value, (str, unicode)):
+        matches = PATTERN.findall(value)
+
+        for match, var_name in matches:
+            # print('  var match: {}'.format(match))
+
+            # Split the variable name on : so we can walk down like a Pillar
+            var_name_parts = var_name.split(':')
+
+            # Make sure the match isn't pointing to the current node or a node already in the stack
+            if var_name_parts != path and var_name_parts not in stack:
+                # Fetch the value of the target node
+                target_value = resolve_node(var_name_parts, pillar, stack + [path])
+
+                # print('  target_value: {}'.format(target_value))
+
+                # We have to cast numbers into strings in order to use them in the replace
+                if isinstance(target_value, (int, float)):
+                    value = value.replace(match, str(target_value))
+                elif isinstance(target_value, (str, unicode)):
+                    value = value.replace(match, target_value)
+
+                # print('  new value: {}'.format(value))
+
+    return value
